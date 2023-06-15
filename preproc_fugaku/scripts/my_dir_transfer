@@ -1,0 +1,106 @@
+#!/bin/bash
+#
+# Copyright 2023 RIKEN & Fujitsu Limited
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#      http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+function usage() {
+  echo $1
+  cat <<EOT
+Description:
+  Search the specified directory for files and distribute them as common files, Create a list of them.
+  Wrapper script for command llio_transfer.
+
+Synopsis:
+  `basename $0` [Option] DIR_NAME...
+
+Options:
+  -l pathname
+       Save a common file list in directory specified by pathname.  If no directory path is given, save in the current directory.
+  -p
+       Deletes a distributed common file. 
+
+End code
+     0   if OK.
+     1   if any trouble.
+EOT
+  exit 1
+}
+
+function out() {
+  echo `basename $0`" :"$1
+}
+
+[[ $$ != `pgrep -fo "$0"`  ]] && [[ $PPID != `pgrep -fo "$0"`  ]] && exit 1
+
+if [ $# == 0 ]; then
+    usage
+    exit 1
+fi
+
+while getopts ":pl:" OPT
+do
+  case $OPT in
+    p) FLAG_LLIO_PURGE=1 ;;
+    l) DIR_FILELIST=$OPTARG ;;
+    :)  usage "[ERROR] -$OPTARG: Option argument is undefined.";;
+    \?) usage "[ERROR] -$OPTARG: Undefined options.";;
+  esac
+done
+
+if [[ -z "$FLAG_LLIO_PURGE" ]]; then
+    FILENAME=llio_transfer.${PJM_SUBJOBID}.`date +'%Y%M%S'`.list.${RANDOM}
+else
+    FILENAME=llio_transfer.${PJM_SUBJOBID}.`date +'%Y%M%S'`.purge.list.${RANDOM}
+fi
+
+if [ -n "$DIR_FILELIST" ]; then
+    if [ ! -d $DIR_FILELIST ]; then 
+	out "No such directory: "$DIR_FILELIST
+        exit 1
+    fi
+    FILEPATH=${DIR_FILELIST}/${FILENAME}
+else
+    FILEPATH=${FILENAME}
+fi
+
+shift $((OPTIND - 1))
+
+for transfer_dir in $@
+do
+    if [ ! -d $DIR_FILELIST ]; then
+        out "No such transfer directory: "$DIR_FILELIST
+    else
+        find ${transfer_dir}/ -type f -size +1c -print >> $FILEPATH
+    fi
+done
+
+ifs_old=${IFS}
+IFS=$'\n'
+if [[ -z "$FLAG_LLIO_PURGE" ]]; then
+    tmp_array=($(cat $FILEPATH | grep -v " " | xargs -L 256 /usr/bin/llio_transfer 2>&1))
+else
+    tmp_array=($(cat $FILEPATH | grep -v " " | xargs -L 256 /usr/bin/llio_transfer --purge 2>&1))
+fi
+i=0
+for e in ${tmp_array[@]}; do
+    out "${e}"
+done
+IFS=${ifs_old}
+
+if [ ${#tmp_array[*]} != 0 ]; then
+    exit 1
+else
+    exit 0
+fi
+
