@@ -1,0 +1,45 @@
+# Copyright 2023 RIKEN & Fujitsu Limited
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#      http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+MMCIFCache=example/mmcif_cache.json
+InputFasta=example/input/short.fasta
+AlignmentDir=example/alignment
+OutputDir=$LOGDIR
+Timeout=3600
+
+PARAMS=(
+    python3
+    $OPENFOLDDIR/run_pretrained_openfold_multi.py
+    $InputFasta
+    $OutputDir
+    $DataDir/pdb_mmcif/mmcif_files
+    --model_device cpu
+    --jax_param_path $DataDir/params/params_model_1.npz
+    --kalign_binary_path $PREFIX/bin/kalign
+    --use_precomputed_alignments $AlignmentDir
+    --obsolete_pdbs_path $DataDir/pdb_mmcif/obsolete.dat
+    --max_template_date 2021-10-10
+    --release_dates_path $MMCIFCache
+    --timeout $Timeout
+    --first_lower
+)
+
+source $OPENFOLDDIR/scripts/setenv
+
+# for Torch Extensions
+export TORCH_EXTENSIONS_DIR=$TMPDIR
+
+export LD_PRELOAD=$PREFIX/lib/libtcmalloc.so
+export OMP_NUM_THREADS=48
+export OPENMM_CPU_THREADS=48

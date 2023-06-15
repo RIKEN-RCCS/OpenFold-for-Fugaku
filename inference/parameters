@@ -1,0 +1,61 @@
+# Copyright 2023 RIKEN & Fujitsu Limited
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#      http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+source $OPENFOLDDIR/scripts/setenv
+
+MMCIFCache=example/mmcif_cache.json
+InputFastaDir=example/input
+AlignmentDir=example/alignment
+OutputDir=$LOGDIR
+
+if [ "$AlignmentDir" != "" ]; then
+    PreComputedAlignmentsOpt="--use_precomputed_alignments $AlignmentDir"
+fi
+
+PARAMS=(
+    python3
+    $OPENFOLDDIR/run_pretrained_openfold.py
+    $InputFastaDir
+    $DataDir/pdb_mmcif/mmcif_files
+    --model_device cpu
+    --jax_param_path $DataDir/params/params_model_1.npz
+    --output_dir $OutputDir
+    --kalign_binary_path $PREFIX/bin/kalign
+    ${PreComputedAlignmentsOpt}
+    --obsolete_pdbs_path $DataDir/pdb_mmcif/obsolete.dat
+    --max_template_date 2021-10-10
+    --release_dates_path $MMCIFCache
+    --uniref90_database_path $DataDir/uniref90/uniref90.fasta
+    --mgnify_database_path $DataDir/mgnify/mgy_clusters_2018_12.fa
+    --pdb70_database_path $DataDir/pdb70/pdb70
+    --uniclust30_database_path $DataDir/uniclust30/uniclust30_2018_08/uniclust30_2018_08
+    --jackhmmer_binary_path $PREFIX/bin/jackhmmer
+    --hhblits_binary_path $PREFIX/bin/hhblits
+    --hhsearch_binary_path $PREFIX/bin/hhsearch
+    --bfd_database_path $DataDir/small_bfd/bfd-first_non_consensus_sequences.fasta # for small_bfd
+    #--bfd_database_path $DataDir/bfd/bfd_metaclust_clu_complete_id30_c90_final_seq.sorted_opt # for bfd
+    --use_small_bfd
+    --cpus 48
+)
+
+# for Torch Extensions
+export TORCH_EXTENSIONS_DIR=$TMPDIR
+
+export OMPI_COMM_WORLD_RANK=$PMIX_RANK
+export OMPI_COMM_WORLD_LOCAL_RANK=$PLE_RANK_ON_NODE
+export LOCAL_RANK=$OMPI_COMM_WORLD_LOCAL_RANK
+
+export LD_PRELOAD=$PREFIX/lib/libtcmalloc.so
+export OMP_NUM_THREADS=48
+export OPENMM_CPU_THREADS=48
