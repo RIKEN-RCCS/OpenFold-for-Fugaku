@@ -24,8 +24,17 @@ InputFile=input_examples/short.fasta
 # The path to the output directory
 OutputDir=output
 
+# The root path of temporary directories.
+# Each job creates one or more sub-directories in $TempDir.
+# It is safe to remove all temporary directories once all jobs are completed.
+# /tmp is NOT recommended on Fugaku as OpenFold consumes GBs of disk space.
+TempDir=temp
+
 # Whether or not LLIO transfer is performed for Python modules, executables, and databases
 DoStaging=1
+
+# Convert small BFD MSAs from the sto format to a3m format to improve I/O performance in training/inference
+ConvertSmallBFDToA3M=0
 
 #---------- Job configurations ----------#
 
@@ -60,7 +69,22 @@ Timeout_mgnify=3600
 Timeout_uniref90=3600
 Timeout_pdb70=1800
 
+# Use the stream version of sto-to-a3m conversion if sto file size is
+# larger than this size, which keeps memory usage small
+StreamSTOSize=1073741824 # 1 GiB
+
+#------- Output size configurations -------#
+
+# The maximum number of MSA hits ("": unlimited)
+MaxHits_small_bfd=""
+MaxHits_mgnify=5000
+MaxHits_uniref90=10000
+
 #----------- Configurations end -----------#
+
+if [[ -n $MaxHits_small_bfd && $ConvertSmallBFDToA3M != 1 ]]; then
+    echo "Warning: MaxHits_small_bfd is not effective because this is applied only if the output format is a3m (ConvertSmallBFDToA3M=1)." >&2
+fi
 
 SubmitScript=scripts/Submit_preproc_fugaku
 
@@ -70,6 +94,7 @@ JackhmmerDatabases=(small_bfd mgnify uniref90)
 for Database in ${JackhmmerDatabases[@]}; do
     JobTimeVar="JobTime_${Database}"
     TimeoutVar="Timeout_${Database}"
+    MaxHitsVar="MaxHits_${Database}"
     DoVar="Do_${Database}"
     if (( $DoVar == 1 )); then
 	TimeLimit=${!JobTimeVar} \
@@ -79,10 +104,14 @@ for Database in ${JackhmmerDatabases[@]}; do
 		 NumThreads=$NumThreadsJackhmmer \
 		 InputFile=$InputFile \
 		 OutputDir=$OutputDir \
+		 TempDir=$TempDir \
 		 Mode=$Database \
 		 StepName="${StepNameBase}_${Database}" \
 		 DoStaging=$DoStaging \
 		 LimitMaxMem=$LimitMaxMemJackhmmer \
+		 StreamSTOSize=$StreamSTOSize \
+		 ConvertSmallBFDToA3M=$ConvertSmallBFDToA3M \
+		 MaxHits=${!MaxHitsVar} \
 		 ScriptArgs="" \
 		 $SubmitScript
     fi
@@ -105,10 +134,14 @@ if (( $Do_pdb70  == 1 )); then
 	     NumThreads=$NumThreadsHHsearch \
 	     InputFile=$InputFile \
 	     OutputDir=$OutputDir \
+	     TempDir=$TempDir \
 	     Mode=pdb70 \
 	     StepName=$StepName \
 	     DoStaging=$DoStaging \
 	     LimitMaxMem=$LimitMaxMemHHsearch \
+	     StreamSTOSize=$StreamSTOSize \
+	     ConvertSmallBFDToA3M=$ConvertSmallBFDToA3M \
+	     MaxHits="" \
 	     ScriptArgs="" \
 	     $SubmitScript
 fi

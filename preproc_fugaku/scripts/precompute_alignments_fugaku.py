@@ -61,8 +61,9 @@ def run_seq_group_alignments(seqs, alignment_runner, args):
                 try:
                     os.makedirs(alignment_dir)
                 except Exception as e:
-                    logging.warning(f"Failed to create directory for {name} with exception {e}...")
-                    continue
+                    if not os.path.exists(alignment_dir):
+                        logging.warning(f"Failed to create directory for {name} with exception {e}...")
+                        continue
 
             if i_name == 0:
                 fd, fasta_path = tempfile.mkstemp(suffix=".fasta")
@@ -231,6 +232,17 @@ def get_uncompleted_seqs(input_seq_chains, comm, alignment_runner):
 
 
 def main(args):
+
+    comm = MPI.COMM_WORLD
+    mpi_rank = comm.Get_rank()
+    mpi_size = comm.Get_size()
+    assert mpi_size > 0
+    assert mpi_rank >= 0 and mpi_rank < mpi_size
+
+    assert len(args.temp_dir) > 0
+    my_temp_dir = os.path.join(args.temp_dir, f"{mpi_rank}")
+    os.makedirs(my_temp_dir)
+
     # Build the alignment tool runner
     alignment_runner = AlignmentRunner(
         jackhmmer_binary_path=args.jackhmmer_binary_path,
@@ -242,16 +254,16 @@ def main(args):
         uniclust30_database_path=None,
         pdb70_database_path=args.pdb70_database_path,
         use_small_bfd=True,
+        convert_small_bfd_to_a3m=args.convert_small_bfd_to_a3m,
         no_cpus=args.cpus_per_task,
         disable_write_permission=args.disable_write_permission,
         timeout=args.timeout,
+        stream_sto_size=args.stream_sto_size,
+        uniref_max_hits=args.uniref90_max_hits,
+        mgnify_max_hits=args.mgnify_max_hits,
+        small_bfd_max_hits=args.small_bfd_max_hits,
+        temp_dir=my_temp_dir,
     )
-
-    comm = MPI.COMM_WORLD
-    mpi_rank = comm.Get_rank()
-    mpi_size = comm.Get_size()
-    assert mpi_size > 0
-    assert mpi_rank >= 0 and mpi_rank < mpi_size
 
     input_file = args.input_file
     with open(input_file, 'r') as fp:
@@ -282,7 +294,8 @@ def main(args):
     logging.info(f"host={host}, rank={mpi_rank}/{mpi_size}, "
                  f"total_count={orig_total_count}, "
                  f"total_uncompleted_count={uncompleted_total_count}, "
-                 f"my_count={len(input_seq_chains)}")
+                 f"my_count={len(input_seq_chains)}, "
+                 f"my_temp_dir={my_temp_dir}")
 
     completed_count, total_count = run_seq_group_alignments(
         input_seq_chains,
@@ -344,6 +357,10 @@ if __name__ == "__main__":
         help="The RLIMIT_AS memory limit for each search tool in bytes (default: None)",
     )
     parser.add_argument(
+        '--stream-sto-size', type=int, default=1024*1024*1024,
+        help="Use the stream version of sto-to-a3m conversion if sto file size is larger than this size (default: 1 GiB)",
+    )
+    parser.add_argument(
         '--report_out_path', type=str, default=None,
         help="Path to output the number of uncompleted seqs. (default: None)",
     )
@@ -364,7 +381,30 @@ if __name__ == "__main__":
         action="store_const",
         help="Set permission 440 to output MSA and template files",
     )
-
+    parser.add_argument(
+        "--convert-small-bfd-to-a3m",
+        dest="convert_small_bfd_to_a3m",
+        default=False,
+        const=True,
+        action="store_const",
+        help="Convert small BFD MSAs from STO to A3M",
+    )
+    parser.add_argument(
+        "--uniref90-max-hits", type=int, default=10000,
+        help="The maximum number of MSA hits on UniRef90 (default: 10000)",
+    )
+    parser.add_argument(
+        "--mgnify-max-hits", type=int, default=5000,
+        help="The maximum number of MSA hits on MGnify (default: 5000)",
+    )
+    parser.add_argument(
+        "--small-bfd-max-hits", type=int, default=None,
+        help="The maximum number of MSA hits on small BFD (default: unlimited)",
+    )
+    parser.add_argument(
+        "--temp-dir", type=str, default="/tmp",
+        help="Path to the temporary directory (default: /tmp)",
+    )
 
     args = parser.parse_args()
 
