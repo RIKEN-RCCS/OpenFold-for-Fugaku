@@ -31,6 +31,52 @@
 * 一般に`a3m`のほうがファイルサイズが小さくなります。
 * `$MaxHits_small_bfd`を設定している場合、ヒット件数がその値に制限されます。制限しない場合、一部のタンパク質ではファイルサイズが非常に大きくなる場合があります。
 
+### 前処理完了・未完了リスト
+
+ジョブごとに生成される`log/Submit_preproc_fugaku.(整数).(DB名)`に以下の形式で配列名のリストが出力される。
+
+```
+chains_(DB名)_(ステップ数)_after_complete.csv    : そのステップの終了時に前処理完了済の全配列
+chains_(DB名)_(ステップ数)_after_incomplete.csv  : そのステップの終了時に前処理未完了の全配列
+chains_(DB名)_(ステップ数)_before_complete.csv   : そのステップの開始時に前処理完了済の全配列
+chains_(DB名)_(ステップ数)_before_incomplete.csv : そのステップの開始時に前処理未完了の全配列
+chains_(DB名)_(ステップ数)_failure.csv           : そのステップで前処理に失敗した配列
+chains_(DB名)_(ステップ数)_success.csv           : そのステップで前処理に成功した配列
+```
+
+* `chains_(DB名)_(ステップ数)_failure.csv`と`同_success.csv`は前処理が成功または失敗し次第更新される。
+    * そのため、ジョブやプロセスが時間超過終了や異常終了した場合は処理中・処理待ちの配列がいずれにも含まれない可能性がある。
+
+## 結果確認スクリプト
+
+`./status.py`を実行すると実行中または実行後のジョブの統計情報を`log/`以下から取得して表示する。
+
+```
+$ ./status.py
+Job ID         DB  Step #Procs. #Threads         Last update  #Compl.(b)  #Incompl.(b)  #Success  #Failure #Compl.(a) #Incompl.(a) Progress [%]
+     1  small_bfd     0      12        4 YYYY-MM-DD hh:mm:ss           0           100        10        90         10           90           10
+     1  small_bfd     1       6        8 YYYY-MM-DD hh:mm:ss          10            90        10         0        100            0          100
+     2     mgnify     0      12        4 YYYY-MM-DD hh:mm:ss           0           100        80        20         80           20           80
+     2     mgnify     1       6        8 YYYY-MM-DD hh:mm:ss          80            20        10         5          -            -           90
+     3   uniref90     0      12        4 YYYY-MM-DD hh:mm:ss           0           100        80        20         80           20           80
+     3   uniref90     1       6        8 YYYY-MM-DD hh:mm:ss          80            20        10         5          -            -           90
+     -      pdb70     -       -        -                   -           -             -         -         -          -            -            -
+```
+
+* `Job ID`: ジョブID（ジョブ開始前の場合は`-`）
+* `DB`: データベース名
+* `Step`: ジョブ内のステップID
+* `#Procs.`: ノード内プロセス数
+* `#Threads`: プロセス内スレッド数
+* `Last update`: 前処理完了・未完了リスト（前述）の最終更新時刻
+* `#Compl.(b)`: そのステップの開始時に前処理完了済の配列数
+* `#InCompl.(b)`: そのステップの開始時に前処理未完了の配列数
+* `#Success`: そのステップで前処理に成功した配列数
+* `#Failure`: そのステップで前処理に失敗した配列数
+* `#Compl.(a)`: そのステップの終了時に前処理完了済の配列数（ステップ実行中の場合は`-`）
+* `#InCompl.(a)`: そのステップの終了時に前処理未完了の配列数（ステップ実行中の場合は`-`）
+* `Progress [%]`: 前処理完了済の配列数の割合
+
 ## 使用方法
 
 1. [`scripts/setenv`](../scripts/setenv)の以下の環境変数をセットする
@@ -57,6 +103,7 @@
     * `$CreateDirOnDemand`: 各配列の出力ディレクトリについて、ジョブ開始時ではなく前処理ファイルを書き出す直前に作成する。配列数が多くファイル操作に時間がかかる場合に有効
         * 後述の`$SubDirectorySize`と同時に使用する場合、サブディレクトリも書き出す直前に作成する
     * `$SubDirectorySize`: 入力FASTAファイルの先頭から指定された配列の個数ごとに"0"から始まるサブディレクトリに分割して出力を行う。0の場合はサブディレクトリを作成しない
+        * 前処理開始時にジョブディレクトリ以下に`[配列名],[サブディレクトリ名]`を列挙したCSVファイルが`subdir_map.csv`として書き出される。
     * `$LimitMaxMem*`: プロセスあたりの最大メモリ量を（ノードメモリ量）/（ノード内プロセス数）に制限するかどうか
     * `$NumNodes`: 各ジョブのノード数
     * `$JobTime_*`: 各ジョブの制限時間

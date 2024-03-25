@@ -27,6 +27,7 @@ NumTotalThreads=$(($NumProcs * $NumThreads))
 echo "---- worker.sh arguments -----"
 echo InputDir=$InputDir
 echo OutputDir=$OutputDir
+echo LogDir=$LogDir
 echo TempDir=$TempDir
 echo ToolTimeLimit=$ToolTimeLimit
 echo NumNodes=$NumNodes
@@ -187,6 +188,7 @@ fi
 
 mkdir -p $OutputDir
 
+ProcId=0
 while (( $NumProcs > 0 )); do
 
     MaxMem=""
@@ -236,8 +238,10 @@ while (( $NumProcs > 0 )); do
 	--timeout $ToolTimeLimit \
 	--report_out_path $ReportOutPath \
 	--stream-sto-size $StreamSTOSize \
+	--log-dir $LogDir \
 	--temp-dir $JobTempDir \
 	--sub-directory-size $SubDirectorySize \
+	--proc-id $ProcId \
 	$DatabaseArgs \
 	$MaxMemArg \
 	$ConvertSmallBFDToA3MArg \
@@ -262,6 +266,8 @@ while (( $NumProcs > 0 )); do
     else
 	NumThreads=0
     fi
+
+    ProcId=$(($ProcId + 1))
 
 done
 

@@ -46,7 +46,13 @@ UNCOMPLETED_FLAG_DTYPE = bool
 UNCOMPLETED_FLAG_AR_OP = MPI.LOR
 
 
-def run_seq_group_alignments(seqs, alignment_runner, args, subdir_map=None):
+def run_seq_group_alignments(
+        seqs,
+        alignment_runner,
+        args,
+        success_result_file,
+        failure_result_file,
+        subdir_map=None):
     completed_count = 0
     total_count = 0
     for seq, names in seqs:
@@ -72,6 +78,7 @@ def run_seq_group_alignments(seqs, alignment_runner, args, subdir_map=None):
                             logging.warning(f"Failed to create directory for {name} with exception {e}...")
                             continue
 
+            success = False
             if i_name == 0:
                 fd, fasta_path = tempfile.mkstemp(suffix=".fasta")
                 with os.fdopen(fd, 'w') as fp:
@@ -90,29 +97,33 @@ def run_seq_group_alignments(seqs, alignment_runner, args, subdir_map=None):
                     if i_name == 0:
                         first_generated = generated
 
-                    logging.info(f"Processing for {name} done!")
-                    completed_count += 1
+                    success = True
 
                 except:
                     traceback.print_exc()
-                    logging.warning(f"Failed to run alignments for {name}. Skipping...")
 
                 os.remove(fasta_path)
 
             else:
-                if first_generated is None:
-                    logging.warning(f"Failed to run alignments for {name}. Skipping...")
-                    continue
+                if first_generated is not None:
+                    first_name = names[0]
+                    logging.info(f"Linking already generated alignment for {name} from {first_name}")
+                    for f in first_generated:
+                        os.symlink(
+                            os.path.join("..", first_name, f),
+                            os.path.join(alignment_dir, f))
 
-                first_name = names[0]
-                logging.info(f"Linking already generated alignment for {name} from {first_name}")
-                for f in first_generated:
-                    os.symlink(
-                        os.path.join("..", first_name, f),
-                        os.path.join(alignment_dir, f))
+                    success = True
 
+            if success:
                 logging.info(f"Processing for {name} done!")
                 completed_count += 1
+                success_result_file.Write_shared(f"{name}\n".encode("utf-8"))
+                success_result_file.Sync()
+            else:
+                logging.warning(f"Failed to run alignments for {name}. Skipping...")
+                failure_result_file.Write_shared(f"{name}\n".encode("utf-8"))
+                failure_result_file.Sync()
 
     return completed_count, total_count
 
@@ -175,13 +186,15 @@ def get_unique_seqs(input_seq_chains):
     return list(sorted(s2c.items(), key=lambda x: x[0]))
 
 
-def get_uncompleted_flags(input_seq_chains, output_dir, alignment_runner):
+def get_uncompleted_flags(input_seq_chains, subdir_map, output_dir, alignment_runner):
     """
     Returns flags each of which means the search for the corresponding input sequence is already completed.
 
     Args:
         input_seq_chains:
             A list of (seq., chain_name) tuples. Must be identical among all ranks
+        subdir_map:
+            A dictionary from chain name to sub-directory name. Set None to disable sub-directories
         output_dir:
             Path to the root output directory
         alignment_runner:
@@ -191,7 +204,11 @@ def get_uncompleted_flags(input_seq_chains, output_dir, alignment_runner):
     """
     flags = np.zeros([len(input_seq_chains)], dtype=UNCOMPLETED_FLAG_DTYPE)
     for i, (seq, chain) in enumerate(input_seq_chains):
-        alignment_dir = os.path.join(output_dir, chain)
+        if subdir_map is None:
+            alignment_dir = os.path.join(output_dir, chain)
+        else:
+            alignment_dir = os.path.join(output_dir, subdir_map[chain], chain)
+            
         dry_run = alignment_runner.dry_run(
             alignment_dir,
             input_label=chain,
@@ -203,7 +220,7 @@ def get_uncompleted_flags(input_seq_chains, output_dir, alignment_runner):
     return flags
 
 
-def get_uncompleted_seqs(input_seq_chains, comm, alignment_runner):
+def get_uncompleted_seqs(input_seq_chains, subdir_map, comm, alignment_runner):
     """
     Check whether search for each input sequence is already completed,
     and returns equally-split uncompleted sequences.
@@ -211,6 +228,8 @@ def get_uncompleted_seqs(input_seq_chains, comm, alignment_runner):
     Args:
         input_seq_chains:
             A list of (seq., chain_name) tuples. Must be identical among all ranks
+        subdir_map:
+            A dictionary from chain name to sub-directory name. Set None to disable sub-directories
         comm:
             mpi4py communicator
         alignment_runner:
@@ -221,10 +240,13 @@ def get_uncompleted_seqs(input_seq_chains, comm, alignment_runner):
     mpi_rank = comm.Get_rank()
     mpi_size = comm.Get_size()
 
+    comm.Barrier()
+
     proc_begin = int(len(input_seq_chains)*mpi_rank/mpi_size)
     proc_end   = int(len(input_seq_chains)*(mpi_rank+1)/mpi_size)
     proc_uncompleted_flags = get_uncompleted_flags(
         input_seq_chains[proc_begin:proc_end],
+        subdir_map,
         args.output_dir,
         alignment_runner)
     send_uncomplted_flags = np.zeros([len(input_seq_chains)], dtype=UNCOMPLETED_FLAG_DTYPE)
@@ -239,7 +261,48 @@ def get_uncompleted_seqs(input_seq_chains, comm, alignment_runner):
             if x[1] > 0]
 
 
+def write_chain_status(
+        orig_seq_chains,
+        input_seq_chains,
+        prefix: str,
+        database: str,
+        args):
+    uncompleted_chains = [x[1] for x in input_seq_chains]
+    orig_chains = [x[1] for x in orig_seq_chains]
+    uncompleted_chain_set = set(uncompleted_chains)
+    completed_chains = [x for x in orig_chains if x not in uncompleted_chain_set]
+    for label, chains in [
+            ("complete", completed_chains),
+            ("incomplete", uncompleted_chains)]:
+        with open(os.path.join(args.log_dir, f"chains_{database}_{args.proc_id}_{prefix}_{label}.csv"), "w") as f:
+            for x in chains:
+                f.write(x+"\n")
+
 def main(args):
+
+    # Check process id
+    if args.proc_id < 0:
+        raise ValueError(f"proc_id must be 0 or more: proc_id={args.proc_id}")
+
+    # Check database args
+    available_databases = []
+    if args.uniref90_database_path is not None:
+        available_databases.append("uniref90")
+    if args.mgnify_database_path is not None:
+        available_databases.append("mgnify")
+    if args.bfd_database_path is not None:
+        available_databases.append("small_bfd")
+    if args.uniclust30_database_path is not None:
+        available_databases.append("uniclust30")
+    if args.pdb70_database_path is not None:
+        available_databases.append("pdb70")
+
+    if len(available_databases) == 0:
+        raise ValueError("No database path is provided")
+    elif len(available_databases) > 1:
+        raise ValueError(f"Using more than one database in script is not expected: {available_databases}")
+
+    database = available_databases[0]
 
     # Apply memory limit
     if args.max_memory is not None:
@@ -294,12 +357,25 @@ def main(args):
         subdir_map = {}
         for i, (_, name) in enumerate(input_seq_chains):
             subdir_map[name] = str(i//args.sub_directory_size)
+
+        # Write the map as a CSV file
+        path = os.path.join(args.log_dir, "subdir_map.csv")
+        if mpi_rank == 0 and not os.path.exists(path):
+            logging.info(f"Writing subdir_map to {path}")
+            with open(path, "w") as f:
+                for name, subdir in subdir_map.items():
+                    f.write(f"{name},{subdir}\n")
             
     else:
         subdir_map = None
 
     # Remove completed chains
-    input_seq_chains = get_uncompleted_seqs(input_seq_chains, comm, alignment_runner)
+    orig_seq_chains = input_seq_chains
+    input_seq_chains = get_uncompleted_seqs(orig_seq_chains, subdir_map, comm, alignment_runner)
+
+    # write completed/uncompleted chains
+    if mpi_rank == 0:
+        write_chain_status(orig_seq_chains, input_seq_chains, "before", database, args)
 
     # Remove duplicated seqs.
     if args.unique:
@@ -321,16 +397,37 @@ def main(args):
                  f"my_count={len(input_seq_chains)}, "
                  f"my_temp_dir={my_temp_dir}")
 
+    def open_result_file(label: str):
+        result_file_path = os.path.join(args.log_dir, f"chains_{database}_{args.proc_id}_{label}.csv")
+        result_file = MPI.File.Open(
+            comm, result_file_path, MPI.MODE_CREATE | MPI.MODE_WRONLY | MPI.MODE_APPEND)
+        result_file.Set_atomicity(True)
+        return result_file
+    
+    success_result_file = open_result_file("success")
+    failure_result_file = open_result_file("failure")
+    
     completed_count, total_count = run_seq_group_alignments(
         input_seq_chains,
         alignment_runner,
         args,
+        success_result_file,
+        failure_result_file,
         subdir_map=subdir_map)
 
     logging.info(f"DONE! "
                  f"host={host}, rank={mpi_rank}/{mpi_size}, "
                  f"my_completed_count={completed_count}, "
                  f"my_count={total_count}")
+
+    success_result_file.Close()
+    failure_result_file.Close()
+
+    # write completed/uncompleted chains
+    uncompleted_seq_chains = \
+        get_uncompleted_seqs(orig_seq_chains, subdir_map, comm, alignment_runner)
+    if mpi_rank == 0:
+        write_chain_status(orig_seq_chains, uncompleted_seq_chains, "after", database, args)
 
     completed_count = comm.allreduce(completed_count)
     total_count = comm.allreduce(total_count)
@@ -439,8 +536,16 @@ if __name__ == "__main__":
         help="The maximum number of MSA hits on small BFD (default: unlimited)",
     )
     parser.add_argument(
+        "--log-dir", type=str, default=".",
+        help="Path to the log directory (default: .)",
+    )
+    parser.add_argument(
         "--temp-dir", type=str, default="/tmp",
         help="Path to the temporary directory (default: /tmp)",
+    )
+    parser.add_argument(
+        "--proc-id", type=int, default=-1,
+        help="Unique process ID throughout the job"
     )
 
     args = parser.parse_args()
