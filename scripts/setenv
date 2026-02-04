@@ -13,22 +13,22 @@
 # limitations under the License.
 
 module purge
-module load lang/tcsds-1.2.38
+module load lang/tcsds-1.2.42
 
 ############################################################
 # Please set PREFIX, OPENFOLDDIR, DATADIR, PJSUB_OPT
 
-export PREFIX=
-export OPENFOLDDIR=
-export DATADIR=
-export PJSUB_OPT=
+export PREFIX=/vol0006/ra000018/data/20260123_Openfold-for-Fugaku-v2/20260203_WWW_OpenFold-for-Fugaku/opt
+export OPENFOLDDIR=/vol0006/ra000018/data/20260123_Openfold-for-Fugaku-v2/20260203_WWW_OpenFold-for-Fugaku/OpenFold-for-Fugaku_hierarchical-inference
+export DATADIR=/vol0006/ra000018/data/OpenFold/data
+export PJSUB_OPT='-x PJM_LLIO_GFSCACHE=/vol0004:/vol0006'
 
 # "fugaku": The Supercomuter Fugaku
 # "psb": A generic supercomuter that uses the PBS job scheduler
 export OPENFOLD_MACHINE="fugaku"
 
 # Per-node memory size
-export OPENFOLD_MAX_MEM=27917287424 # 26 GiB
+export OPENFOLD_MAX_MEM=34359738368 # 32 GiB
 
 # Define only if PBS is used
 export OPENFOLD_PBS_RESOURCE=""
