@@ -26,6 +26,7 @@ import tempfile
 import traceback
 from mpi4py import MPI
 import numpy as np
+import resource
 
 import os
 os.environ["OPENFOLD_IGNORE_IMPORT"] = "1"
@@ -45,7 +46,13 @@ UNCOMPLETED_FLAG_DTYPE = bool
 UNCOMPLETED_FLAG_AR_OP = MPI.LOR
 
 
-def run_seq_group_alignments(seqs, alignment_runner, args):
+def run_seq_group_alignments(
+        seqs,
+        alignment_runner,
+        args,
+        success_result_file,
+        failure_result_file,
+        subdir_map=None):
     completed_count = 0
     total_count = 0
     for seq, names in seqs:
@@ -55,15 +62,23 @@ def run_seq_group_alignments(seqs, alignment_runner, args):
         first_generated = None
         for i_name, name in enumerate(names):
             total_count += 1
-            alignment_dir = os.path.join(args.output_dir, name)
 
-            if not os.path.exists(alignment_dir):
-                try:
-                    os.makedirs(alignment_dir)
-                except Exception as e:
-                    logging.warning(f"Failed to create directory for {name} with exception {e}...")
-                    continue
+            if subdir_map is None:
+                alignment_dir = os.path.join(args.output_dir, name)
+            else:
+                alignment_dir = os.path.join(args.output_dir, subdir_map[name], name)
+                logging.info(f"Sub-directory of {name}: {subdir_map[name]}")
 
+            if not args.create_dir_on_demand:
+                if not os.path.exists(alignment_dir):
+                    try:
+                        os.makedirs(alignment_dir, exist_ok=True)
+                    except Exception as e:
+                        if not os.path.exists(alignment_dir):
+                            logging.warning(f"Failed to create directory for {name} with exception {e}...")
+                            continue
+
+            success = False
             if i_name == 0:
                 fd, fasta_path = tempfile.mkstemp(suffix=".fasta")
                 with os.fdopen(fd, 'w') as fp:
@@ -76,34 +91,39 @@ def run_seq_group_alignments(seqs, alignment_runner, args):
                         alignment_dir,
                         input_label=name,
                         ignore_if_exists=True,
-                        max_memory=args.max_memory,
+                        max_memory=None, # setrlimit is no longer applied in each process
+                        create_dir_on_demand=args.create_dir_on_demand,
                     )
                     if i_name == 0:
                         first_generated = generated
 
-                    logging.info(f"Processing for {name} done!")
-                    completed_count += 1
+                    success = True
 
                 except:
                     traceback.print_exc()
-                    logging.warning(f"Failed to run alignments for {name}. Skipping...")
 
                 os.remove(fasta_path)
 
             else:
-                if first_generated is None:
-                    logging.warning(f"Failed to run alignments for {name}. Skipping...")
-                    continue
+                if first_generated is not None:
+                    first_name = names[0]
+                    logging.info(f"Linking already generated alignment for {name} from {first_name}")
+                    for f in first_generated:
+                        os.symlink(
+                            os.path.join("..", first_name, f),
+                            os.path.join(alignment_dir, f))
 
-                first_name = names[0]
-                logging.info(f"Linking already generated alignment for {name} from {first_name}")
-                for f in first_generated:
-                    os.symlink(
-                        os.path.join("..", first_name, f),
-                        os.path.join(alignment_dir, f))
+                    success = True
 
+            if success:
                 logging.info(f"Processing for {name} done!")
                 completed_count += 1
+                success_result_file.Write_shared(f"{name}\n".encode("utf-8"))
+                success_result_file.Sync()
+            else:
+                logging.warning(f"Failed to run alignments for {name}. Skipping...")
+                failure_result_file.Write_shared(f"{name}\n".encode("utf-8"))
+                failure_result_file.Sync()
 
     return completed_count, total_count
 
@@ -166,13 +186,15 @@ def get_unique_seqs(input_seq_chains):
     return list(sorted(s2c.items(), key=lambda x: x[0]))
 
 
-def get_uncompleted_flags(input_seq_chains, output_dir, alignment_runner):
+def get_uncompleted_flags(input_seq_chains, subdir_map, output_dir, alignment_runner):
     """
     Returns flags each of which means the search for the corresponding input sequence is already completed.
 
     Args:
         input_seq_chains:
             A list of (seq., chain_name) tuples. Must be identical among all ranks
+        subdir_map:
+            A dictionary from chain name to sub-directory name. Set None to disable sub-directories
         output_dir:
             Path to the root output directory
         alignment_runner:
@@ -182,7 +204,11 @@ def get_uncompleted_flags(input_seq_chains, output_dir, alignment_runner):
     """
     flags = np.zeros([len(input_seq_chains)], dtype=UNCOMPLETED_FLAG_DTYPE)
     for i, (seq, chain) in enumerate(input_seq_chains):
-        alignment_dir = os.path.join(output_dir, chain)
+        if subdir_map is None:
+            alignment_dir = os.path.join(output_dir, chain)
+        else:
+            alignment_dir = os.path.join(output_dir, subdir_map[chain], chain)
+            
         dry_run = alignment_runner.dry_run(
             alignment_dir,
             input_label=chain,
@@ -194,7 +220,7 @@ def get_uncompleted_flags(input_seq_chains, output_dir, alignment_runner):
     return flags
 
 
-def get_uncompleted_seqs(input_seq_chains, comm, alignment_runner):
+def get_uncompleted_seqs(input_seq_chains, subdir_map, comm, alignment_runner):
     """
     Check whether search for each input sequence is already completed,
     and returns equally-split uncompleted sequences.
@@ -202,6 +228,8 @@ def get_uncompleted_seqs(input_seq_chains, comm, alignment_runner):
     Args:
         input_seq_chains:
             A list of (seq., chain_name) tuples. Must be identical among all ranks
+        subdir_map:
+            A dictionary from chain name to sub-directory name. Set None to disable sub-directories
         comm:
             mpi4py communicator
         alignment_runner:
@@ -212,10 +240,13 @@ def get_uncompleted_seqs(input_seq_chains, comm, alignment_runner):
     mpi_rank = comm.Get_rank()
     mpi_size = comm.Get_size()
 
+    comm.Barrier()
+
     proc_begin = int(len(input_seq_chains)*mpi_rank/mpi_size)
     proc_end   = int(len(input_seq_chains)*(mpi_rank+1)/mpi_size)
     proc_uncompleted_flags = get_uncompleted_flags(
         input_seq_chains[proc_begin:proc_end],
+        subdir_map,
         args.output_dir,
         alignment_runner)
     send_uncomplted_flags = np.zeros([len(input_seq_chains)], dtype=UNCOMPLETED_FLAG_DTYPE)
@@ -230,7 +261,66 @@ def get_uncompleted_seqs(input_seq_chains, comm, alignment_runner):
             if x[1] > 0]
 
 
+def write_chain_status(
+        orig_seq_chains,
+        input_seq_chains,
+        prefix: str,
+        database: str,
+        args):
+    uncompleted_chains = [x[1] for x in input_seq_chains]
+    orig_chains = [x[1] for x in orig_seq_chains]
+    uncompleted_chain_set = set(uncompleted_chains)
+    completed_chains = [x for x in orig_chains if x not in uncompleted_chain_set]
+    for label, chains in [
+            ("complete", completed_chains),
+            ("incomplete", uncompleted_chains)]:
+        with open(os.path.join(args.log_dir, f"chains_{database}_{args.proc_id}_{prefix}_{label}.csv"), "w") as f:
+            for x in chains:
+                f.write(x+"\n")
+
 def main(args):
+
+    # Check process id
+    if args.proc_id < 0:
+        raise ValueError(f"proc_id must be 0 or more: proc_id={args.proc_id}")
+
+    # Check database args
+    available_databases = []
+    if args.uniref90_database_path is not None:
+        available_databases.append("uniref90")
+    if args.mgnify_database_path is not None:
+        available_databases.append("mgnify")
+    if args.bfd_database_path is not None:
+        available_databases.append("small_bfd")
+    if args.uniclust30_database_path is not None:
+        available_databases.append("uniclust30")
+    if args.pdb70_database_path is not None:
+        available_databases.append("pdb70")
+
+    if len(available_databases) == 0:
+        raise ValueError("No database path is provided")
+    elif len(available_databases) > 1:
+        raise ValueError(f"Using more than one database in script is not expected: {available_databases}")
+
+    database = available_databases[0]
+
+    # Apply memory limit
+    if args.max_memory is not None:
+        logging.info(f"Applying RLIMIT_AS to {args.max_memory}")
+        resource.setrlimit(
+            resource.RLIMIT_AS,
+            (args.max_memory, resource.RLIM_INFINITY))
+
+    comm = MPI.COMM_WORLD
+    mpi_rank = comm.Get_rank()
+    mpi_size = comm.Get_size()
+    assert mpi_size > 0
+    assert mpi_rank >= 0 and mpi_rank < mpi_size
+
+    assert len(args.temp_dir) > 0
+    my_temp_dir = os.path.join(args.temp_dir, f"{mpi_rank}")
+    os.makedirs(my_temp_dir, exist_ok=True)
+
     # Build the alignment tool runner
     alignment_runner = AlignmentRunner(
         jackhmmer_binary_path=args.jackhmmer_binary_path,
@@ -242,16 +332,16 @@ def main(args):
         uniclust30_database_path=None,
         pdb70_database_path=args.pdb70_database_path,
         use_small_bfd=True,
+        convert_small_bfd_to_a3m=args.convert_small_bfd_to_a3m,
         no_cpus=args.cpus_per_task,
         disable_write_permission=args.disable_write_permission,
         timeout=args.timeout,
+        stream_sto_size=args.stream_sto_size,
+        uniref_max_hits=args.uniref90_max_hits,
+        mgnify_max_hits=args.mgnify_max_hits,
+        small_bfd_max_hits=args.small_bfd_max_hits,
+        temp_dir=my_temp_dir,
     )
-
-    comm = MPI.COMM_WORLD
-    mpi_rank = comm.Get_rank()
-    mpi_size = comm.Get_size()
-    assert mpi_size > 0
-    assert mpi_rank >= 0 and mpi_rank < mpi_size
 
     input_file = args.input_file
     with open(input_file, 'r') as fp:
@@ -262,8 +352,30 @@ def main(args):
     input_seq_chains = list(zip(input_seqs, input_chains)) # [(AAAAA, name1), (BBBB, name2), ..]
     orig_total_count = len(input_seq_chains)
 
+    # Compute sub-directory mapping
+    if args.sub_directory_size > 0:
+        subdir_map = {}
+        for i, (_, name) in enumerate(input_seq_chains):
+            subdir_map[name] = str(i//args.sub_directory_size)
+
+        # Write the map as a CSV file
+        path = os.path.join(args.log_dir, "subdir_map.csv")
+        if mpi_rank == 0 and not os.path.exists(path):
+            logging.info(f"Writing subdir_map to {path}")
+            with open(path, "w") as f:
+                for name, subdir in subdir_map.items():
+                    f.write(f"{name},{subdir}\n")
+            
+    else:
+        subdir_map = None
+
     # Remove completed chains
-    input_seq_chains = get_uncompleted_seqs(input_seq_chains, comm, alignment_runner)
+    orig_seq_chains = input_seq_chains
+    input_seq_chains = get_uncompleted_seqs(orig_seq_chains, subdir_map, comm, alignment_runner)
+
+    # write completed/uncompleted chains
+    if mpi_rank == 0:
+        write_chain_status(orig_seq_chains, input_seq_chains, "before", database, args)
 
     # Remove duplicated seqs.
     if args.unique:
@@ -282,17 +394,40 @@ def main(args):
     logging.info(f"host={host}, rank={mpi_rank}/{mpi_size}, "
                  f"total_count={orig_total_count}, "
                  f"total_uncompleted_count={uncompleted_total_count}, "
-                 f"my_count={len(input_seq_chains)}")
+                 f"my_count={len(input_seq_chains)}, "
+                 f"my_temp_dir={my_temp_dir}")
 
+    def open_result_file(label: str):
+        result_file_path = os.path.join(args.log_dir, f"chains_{database}_{args.proc_id}_{label}.csv")
+        result_file = MPI.File.Open(
+            comm, result_file_path, MPI.MODE_CREATE | MPI.MODE_WRONLY | MPI.MODE_APPEND)
+        result_file.Set_atomicity(True)
+        return result_file
+    
+    success_result_file = open_result_file("success")
+    failure_result_file = open_result_file("failure")
+    
     completed_count, total_count = run_seq_group_alignments(
         input_seq_chains,
         alignment_runner,
-        args)
+        args,
+        success_result_file,
+        failure_result_file,
+        subdir_map=subdir_map)
 
     logging.info(f"DONE! "
                  f"host={host}, rank={mpi_rank}/{mpi_size}, "
                  f"my_completed_count={completed_count}, "
                  f"my_count={total_count}")
+
+    success_result_file.Close()
+    failure_result_file.Close()
+
+    # write completed/uncompleted chains
+    uncompleted_seq_chains = \
+        get_uncompleted_seqs(orig_seq_chains, subdir_map, comm, alignment_runner)
+    if mpi_rank == 0:
+        write_chain_status(orig_seq_chains, uncompleted_seq_chains, "after", database, args)
 
     completed_count = comm.allreduce(completed_count)
     total_count = comm.allreduce(total_count)
@@ -344,6 +479,14 @@ if __name__ == "__main__":
         help="The RLIMIT_AS memory limit for each search tool in bytes (default: None)",
     )
     parser.add_argument(
+        '--stream-sto-size', type=int, default=1024*1024*1024,
+        help="Use the stream version of sto-to-a3m conversion if sto file size is larger than this size (default: 1 GiB)",
+    )
+    parser.add_argument(
+        '--sub-directory-size', type=int, default=0,
+        help="If this is set, create subdirectories for each number of sequences specified by this (default: 0)",
+    )
+    parser.add_argument(
         '--report_out_path', type=str, default=None,
         help="Path to output the number of uncompleted seqs. (default: None)",
     )
@@ -364,7 +507,46 @@ if __name__ == "__main__":
         action="store_const",
         help="Set permission 440 to output MSA and template files",
     )
-
+    parser.add_argument(
+        "--convert-small-bfd-to-a3m",
+        dest="convert_small_bfd_to_a3m",
+        default=False,
+        const=True,
+        action="store_const",
+        help="Convert small BFD MSAs from STO to A3M",
+    )
+    parser.add_argument(
+        "--create-dir-on-demand",
+        dest="create_dir_on_demand",
+        default=False,
+        const=True,
+        action="store_const",
+        help="Create output directories only if alignment is succeeded",
+    )
+    parser.add_argument(
+        "--uniref90-max-hits", type=int, default=10000,
+        help="The maximum number of MSA hits on UniRef90 (default: 10000)",
+    )
+    parser.add_argument(
+        "--mgnify-max-hits", type=int, default=5000,
+        help="The maximum number of MSA hits on MGnify (default: 5000)",
+    )
+    parser.add_argument(
+        "--small-bfd-max-hits", type=int, default=None,
+        help="The maximum number of MSA hits on small BFD (default: unlimited)",
+    )
+    parser.add_argument(
+        "--log-dir", type=str, default=".",
+        help="Path to the log directory (default: .)",
+    )
+    parser.add_argument(
+        "--temp-dir", type=str, default="/tmp",
+        help="Path to the temporary directory (default: /tmp)",
+    )
+    parser.add_argument(
+        "--proc-id", type=int, default=-1,
+        help="Unique process ID throughout the job"
+    )
 
     args = parser.parse_args()
 

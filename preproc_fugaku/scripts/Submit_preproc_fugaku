@@ -30,10 +30,16 @@ echo NumProcs=$NumProcs
 echo NumThreads=$NumThreads
 echo InputFile=$InputFile
 echo OutputDir=$OutputDir
+echo TempDir=$TempDir
 echo Mode=$Mode
 echo StepName=$StepName
 echo DoStaging=$DoStaging
 echo LimitMaxMem=$LimitMaxMem
+echo StreamSTOSize=$StreamSTOSize
+echo ConvertSmallBFDToA3M=$ConvertSmallBFDToA3M
+echo CreateDirOnDemand=$CreateDirOnDemand
+echo SubDirectorySize=$SubDirectorySize
+echo MaxHits=$MaxHits
 echo ScriptArgs=$ScriptArgs
 
 # Check NumNodes
@@ -66,10 +72,12 @@ MyDir=`dirname $MyDir` # preproc_fugaku
 MyName=`basename "$0"`
 Time=`date "+%y%m%d%H%M%S%3N"`
 HostName=`hostname | awk -F . '{ print $1; }'`
-JobName="$MyName.$Time"
+JobName="$MyName.$Time.$Mode"
 
 LogDir="$MyDir/log"/"$JobName"
 mkdir -p "$LogDir" || exit
+
+mkdir -p "$TempDir"
 
 ###
 
@@ -114,6 +122,8 @@ source ../scripts/setenv
 
 InputDir=$InputFile \
     OutputDir=$OutputDir \
+    LogDir=$LogDir \
+    TempDir=$TempDir \
     ToolTimeLimit=$ToolTimeLimit \
     NumNodes=$NumNodes \
     NumProcs=$NumProcs \
@@ -121,6 +131,11 @@ InputDir=$InputFile \
     Mode=$Mode \
     DoStaging=$DoStaging \
     LimitMaxMem=$LimitMaxMem \
+    StreamSTOSize=$StreamSTOSize \
+    ConvertSmallBFDToA3M=$ConvertSmallBFDToA3M \
+    CreateDirOnDemand=$CreateDirOnDemand \
+    SubDirectorySize=$SubDirectorySize \
+    MaxHits=$MaxHits \
     ScriptArgs="$ScriptArgs" \
     $LogDir/$WORKER \
     2>&1 | tee "$LogDir/output"
