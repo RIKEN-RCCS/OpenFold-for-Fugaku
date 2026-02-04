@@ -23,6 +23,8 @@ import os
 import subprocess
 from typing import Any, Callable, Mapping, Optional, Sequence
 from urllib import request
+import tempfile
+import shutil
 
 from openfold.data.tools import utils
 
@@ -47,6 +49,8 @@ class Jackhmmer:
         dom_e: Optional[float] = None,
         num_streamed_chunks: Optional[int] = None,
         streaming_callback: Optional[Callable[[int], None]] = None,
+        stream_sto_size: Optional[int] = None,
+        temp_dir: Optional[str] = "/tmp",
     ):
         """Initializes the Python Jackhmmer wrapper.
 
@@ -67,6 +71,9 @@ class Jackhmmer:
           num_streamed_chunks: Number of database chunks to stream over.
           streaming_callback: Callback function run after each chunk iteration with
             the iteration number as argument.
+          stream_sto_size: Return the path to the generated sto file if its size is larger than this.
+            It is caller's responsibility to remove the sto file after it is consumed.
+          temp_dir: Path to the temporary directory.
         """
         self.binary_path = binary_path
         self.database_path = database_path
@@ -92,6 +99,8 @@ class Jackhmmer:
         self.dom_e = dom_e
         self.get_tblout = get_tblout
         self.streaming_callback = streaming_callback
+        self.stream_sto_size = stream_sto_size
+        self.temp_dir = temp_dir
 
     def _query_chunk(
             self,
@@ -101,7 +110,7 @@ class Jackhmmer:
             timeout: float=None,
             preexec_fn: Callable=None) -> Mapping[str, Any]:
         """Queries the database chunk using Jackhmmer."""
-        with utils.tmpdir_manager(base_dir="/tmp") as query_tmp_dir:
+        with utils.tmpdir_manager(base_dir=self.temp_dir) as query_tmp_dir:
             sto_path = os.path.join(query_tmp_dir, "output.sto")
 
             # The F1/F2/F3 are the expected proportion to pass each of the filtering
@@ -176,16 +185,37 @@ class Jackhmmer:
                 with open(tblout_path) as f:
                     tbl = f.read()
 
-            with open(sto_path) as f:
-                sto = f.read()
+            sto_size = os.path.getsize(sto_path)
+            return_path = (self.stream_sto_size is not None and sto_size > self.stream_sto_size)
+            if return_path:
+                f = tempfile.NamedTemporaryFile(
+                    dir=self.temp_dir,
+                    suffix=".sto",
+                    delete=False,
+                )
+                persistent_sto_path = f.name
+                f.close()
+                shutil.move(sto_path, persistent_sto_path)
+                sto_path = persistent_sto_path
+            else:
+                with utils.timing(
+                        f"Reading STO file ({input_label}, {sto_path})"):
+                    with open(sto_path) as f:
+                        sto = f.read()
+
+            logging.info(f"sto path: {sto_path}, size: {sto_size}, stream_size: {self.stream_sto_size}, stream: {return_path}")
 
         raw_output = dict(
-            sto=sto,
             tbl=tbl,
             stderr=stderr,
             n_iter=self.n_iter,
             e_value=self.e_value,
         )
+
+        if return_path:
+            raw_output["sto_path"] = sto_path
+        else:
+            raw_output["sto"] = sto
 
         return raw_output
 
@@ -205,7 +235,7 @@ class Jackhmmer:
 
         db_basename = os.path.basename(self.database_path)
         db_remote_chunk = lambda db_idx: f"{self.database_path}.{db_idx}"
-        db_local_chunk = lambda db_idx: f"/tmp/ramdisk/{db_basename}.{db_idx}"
+        db_local_chunk = lambda db_idx: f"{self.temp_dir}/ramdisk/{db_basename}.{db_idx}"
 
         # Remove existing files to prevent OOM
         for f in glob.glob(db_local_chunk("[0-9]*")):

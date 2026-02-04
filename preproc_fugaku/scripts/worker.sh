@@ -27,6 +27,8 @@ NumTotalThreads=$(($NumProcs * $NumThreads))
 echo "---- worker.sh arguments -----"
 echo InputDir=$InputDir
 echo OutputDir=$OutputDir
+echo LogDir=$LogDir
+echo TempDir=$TempDir
 echo ToolTimeLimit=$ToolTimeLimit
 echo NumNodes=$NumNodes
 echo NumProcs=$NumProcs
@@ -36,7 +38,24 @@ echo ScriptArgs=$ScriptArgs
 echo NumTotalThreads=$NumTotalThreads
 echo DoStaging=$DoStaging
 echo LimitMaxMem=$LimitMaxMem
+echo StreamSTOSize=$StreamSTOSize
+echo ConvertSmallBFDToA3M=$ConvertSmallBFDToA3M
+echo CreateDirOnDemand=$CreateDirOnDemand
+echo SubDirectorySize=$SubDirectorySize
+echo MaxHits=$MaxHits
 echo "--- worker.sh arguments end ---"
+
+if [[ ${OPENFOLD_MACHINE} == "fugaku" ]]; then
+    JobId=$PJM_SUBJOBID
+else
+    echo "Unsupported machine" >&2
+    exit
+fi
+
+# Job temporary directory
+JobTempDir=$TempDir/$JobId
+echo JobTempDir=$JobTempDir
+mkdir -p $JobTempDir
 
 # Database path in $DataDir
 Uniref90=$DataDir/uniref90/uniref90.fasta
@@ -147,12 +166,21 @@ fi
 DatabaseArgs=""
 if [[ $Mode = "uniref90" ]]; then
     DatabaseArgs="--uniref90_database_path $Database"
+    if [[ -n $MaxHits ]]; then
+	DatabaseArgs="$DatabaseArgs --uniref90-max-hits $MaxHits"
+    fi
 elif [[ $Mode = "pdb70" ]]; then
     DatabaseArgs="--pdb70_database_path $Database/pdb70"
 elif [[ $Mode = "mgnify" ]]; then
     DatabaseArgs="--mgnify_database_path $Database"
+    if [[ -n $MaxHits ]]; then
+	DatabaseArgs="$DatabaseArgs --mgnify-max-hits $MaxHits"
+    fi
 elif [[ $Mode = "small_bfd" ]]; then
     DatabaseArgs="--bfd_database_path $Database"
+    if [[ -n $MaxHits ]]; then
+	DatabaseArgs="$DatabaseArgs --small-bfd-max-hits $MaxHits"
+    fi
 else
     echo "Invalid Mode: $Mode" >&2
     exit
@@ -160,6 +188,7 @@ fi
 
 mkdir -p $OutputDir
 
+ProcId=0
 while (( $NumProcs > 0 )); do
 
     MaxMem=""
@@ -167,6 +196,16 @@ while (( $NumProcs > 0 )); do
     if [[ $LimitMaxMem = 1 ]]; then
 	MaxMem=$(($OPENFOLD_MAX_MEM / $NumProcs))
 	MaxMemArg="--max_memory ${MaxMem}"
+    fi
+
+    ConvertSmallBFDToA3MArg=""
+    if [[ $ConvertSmallBFDToA3M = 1 ]]; then
+	ConvertSmallBFDToA3MArg="--convert-small-bfd-to-a3m"
+    fi
+
+    CreateDirOnDemandArg=""
+    if [[ $CreateDirOnDemand = 1 ]]; then
+	CreateDirOnDemandArg="--create-dir-on-demand"
     fi
 
     export OMP_NUM_THREADS=$NumThreads # Define just in case it is used
@@ -184,6 +223,7 @@ while (( $NumProcs > 0 )); do
 
     ReportOutPath=`mktemp`
 
+    set +e
     $MpiExecTask \
 	$MpiArgs \
 	-x PARALLEL \
@@ -197,9 +237,17 @@ while (( $NumProcs > 0 )); do
 	--kalign_binary_path $BinDir/kalign \
 	--timeout $ToolTimeLimit \
 	--report_out_path $ReportOutPath \
+	--stream-sto-size $StreamSTOSize \
+	--log-dir $LogDir \
+	--temp-dir $JobTempDir \
+	--sub-directory-size $SubDirectorySize \
+	--proc-id $ProcId \
 	$DatabaseArgs \
 	$MaxMemArg \
+	$ConvertSmallBFDToA3MArg \
+	$CreateDirOnDemandArg \
 	$ScriptArgs
+    set -e
 
     RemainingCount=`cat $ReportOutPath`
     rm ${ReportOutPath}
@@ -219,4 +267,8 @@ while (( $NumProcs > 0 )); do
 	NumThreads=0
     fi
 
+    ProcId=$(($ProcId + 1))
+
 done
+
+rm -r $JobTempDir
