@@ -38,6 +38,8 @@ LogDir=${LOGDIR}
 
 . "$ParameterFile"
 
+export PYTHONPATH="${OpenFoldDir}/pyfix:${PYTHONPATH:-}"
+
 export LD_PRELOAD=/usr/lib/FJSVtcs/ple/lib64/libpmix.so:$LD_PRELOAD
 
 ulimit -s 16384
