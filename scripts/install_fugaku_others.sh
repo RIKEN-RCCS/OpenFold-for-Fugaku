@@ -132,7 +132,11 @@ popd
 
 # mpi4py
 #env MPICC=`which mpifcc` pip3 install mpi4py
-env MPICFG="fujitsu-mpi" pip3 install mpi4py==3.1.4
+#env MPICFG="fujitsu-mpi" pip3 install mpi4py==3.1.4
+
+# mpi4py
+export SETUPTOOLS_USE_DISTUTILS=stdlib
+pip3 install -U "pip<24.1" "setuptools<70" "wheel"
 
 # OpenFold
 pushd $OPENFOLDDIR
