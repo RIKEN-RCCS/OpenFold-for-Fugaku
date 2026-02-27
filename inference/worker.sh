@@ -38,6 +38,10 @@ LogDir=${LOGDIR}
 
 . "$ParameterFile"
 
+# Prefer OpenFoldDir if set; otherwise use repo root relative to this script.
+PYFIX_DIR="${OpenFoldDir:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." &>/dev/null && pwd)}/pyfix"
+export PYTHONPATH="${PYFIX_DIR}:${PYTHONPATH:-}"
+
 export LD_PRELOAD=/usr/lib/FJSVtcs/ple/lib64/libpmix.so:$LD_PRELOAD
 
 ulimit -s 16384
